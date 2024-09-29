@@ -1,4 +1,12 @@
 #include "systemcalls.h"
+// #define _XOPEN_SOURCE
+#define __USE_XOPEN
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <errno.h>
+#include <string.h>
+#include <linux/limits.h>
 
 /**
  * @param cmd the command to execute with system()
@@ -9,15 +17,21 @@
 */
 bool do_system(const char *cmd)
 {
+    int ret;
 
-/*
- * TODO  add your code here
- *  Call the system() function with the command set in the cmd
- *   and return a boolean true if the system() call completed with success
- *   or false() if it returned a failure
-*/
+    ret = system(cmd);
 
-    return true;
+    if (WIFEXITED(ret))
+    {
+        printf("Normal termination with exit status=%d\n", WEXITSTATUS(ret));
+
+        if (WEXITSTATUS(ret) == EXIT_SUCCESS)
+            return true;
+        else
+            return false;
+    }
+
+    return false;
 }
 
 /**
@@ -43,23 +57,89 @@ bool do_exec(int count, ...)
     for(i=0; i<count; i++)
     {
         command[i] = va_arg(args, char *);
+        printf("Command: %s\n", command[i]);
     }
     command[count] = NULL;
     // this line is to avoid a compile warning before your implementation is complete
     // and may be removed
     command[count] = command[count];
 
-/*
- * TODO:
- *   Execute a system command by calling fork, execv(),
- *   and wait instead of system (see LSP page 161).
- *   Use the command[0] as the full path to the command to execute
- *   (first argument to execv), and use the remaining arguments
- *   as second argument to the execv() command.
- *
-*/
+/* Assignment implementation */
 
-    va_end(args);
+    char program[NAME_MAX];
+
+    printf("\tCommand: %s\n", command[0]);
+    printf("\tCount: %d\n", count);
+
+    // By convention, the first argument is the name of the program
+    // If any slash is found, we can assume is not an absolute path
+    char * found = strrchr(command[0], '/');
+    
+    if (found == NULL)
+    {
+        printf("Error: the command has to be given as an absolute path\n");
+        return false;
+    }
+    else
+    {
+        printf("strrchr(): %s\n", found);
+        strncpy(program, found+1, NAME_MAX);
+        printf("program: %s\n", program);
+    }
+
+    // Remember: Command is an array of pointers to individual strings, not an whole char array (string)
+
+    int ret, status;
+    pid_t pid;
+    char * argv[count];
+
+    argv[0] = program;
+    printf("argv[0]: %s\n", argv[0]);
+
+    for(int j = 1; j != count; j++)
+    {
+        argv[j] = command[j];
+        printf("argv[%d]: %s\n", j, argv[j]);
+    }
+    argv[count] = NULL;
+
+    pid = fork();
+
+    if(pid == -1)
+    {
+        perror("fork");
+        return false;
+    }
+    else if(pid == 0)
+    {
+        printf("I am the child: %d\n", pid);
+        ret = execv(command[0], argv);
+        printf("This means that there was an error - ret: %d\n", ret);
+
+        if (ret == -1)
+        {
+            perror("execv");
+            exit(EXIT_FAILURE);
+        }
+    }
+    else
+    {
+        printf("I am the parent: %d\n", pid);
+
+        if (wait (&status) == -1)
+        {
+            perror("wait");
+            return false;
+        }
+        else if (WIFEXITED(status))
+        {
+            va_end(args);
+            printf("Exited with status %d - succeed\n", WEXITSTATUS(status));
+            return WIFEXITED(status) && (WEXITSTATUS(status) == 0);
+            //return true;
+        }
+    }
+    // TODO: is really everything ok?
 
     return true;
 }
