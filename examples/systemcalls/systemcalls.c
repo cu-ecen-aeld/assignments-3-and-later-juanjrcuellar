@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <string.h>
 #include <linux/limits.h>
+#include <fcntl.h>
 
 /**
  * @param cmd the command to execute with system()
@@ -57,20 +58,15 @@ bool do_exec(int count, ...)
     for(i=0; i<count; i++)
     {
         command[i] = va_arg(args, char *);
-        printf("Command: %s\n", command[i]);
     }
     command[count] = NULL;
     // this line is to avoid a compile warning before your implementation is complete
     // and may be removed
     command[count] = command[count];
 
-/* Assignment implementation */
+    /* Assignment implementation */
 
     char program[NAME_MAX];
-
-    printf("\tCommand: %s\n", command[0]);
-    printf("\tCount: %d\n", count);
-
     // By convention, the first argument is the name of the program
     // If any slash is found, we can assume is not an absolute path
     char * found = strrchr(command[0], '/');
@@ -82,24 +78,18 @@ bool do_exec(int count, ...)
     }
     else
     {
-        printf("strrchr(): %s\n", found);
         strncpy(program, found+1, NAME_MAX);
-        printf("program: %s\n", program);
     }
-
-    // Remember: Command is an array of pointers to individual strings, not an whole char array (string)
 
     int ret, status;
     pid_t pid;
     char * argv[count];
 
     argv[0] = program;
-    printf("argv[0]: %s\n", argv[0]);
 
     for(int j = 1; j != count; j++)
     {
         argv[j] = command[j];
-        printf("argv[%d]: %s\n", j, argv[j]);
     }
     argv[count] = NULL;
 
@@ -110,11 +100,9 @@ bool do_exec(int count, ...)
         perror("fork");
         return false;
     }
-    else if(pid == 0)
+    else if(pid == 0) // Child
     {
-        printf("I am the child: %d\n", pid);
         ret = execv(command[0], argv);
-        printf("This means that there was an error - ret: %d\n", ret);
 
         if (ret == -1)
         {
@@ -122,10 +110,8 @@ bool do_exec(int count, ...)
             exit(EXIT_FAILURE);
         }
     }
-    else
+    else // Parent
     {
-        printf("I am the parent: %d\n", pid);
-
         if (wait (&status) == -1)
         {
             perror("wait");
@@ -133,13 +119,12 @@ bool do_exec(int count, ...)
         }
         else if (WIFEXITED(status))
         {
+            // Debug
+            // printf("Exited with status %d - succeed\n", WEXITSTATUS(status));
             va_end(args);
-            printf("Exited with status %d - succeed\n", WEXITSTATUS(status));
             return WIFEXITED(status) && (WEXITSTATUS(status) == 0);
-            //return true;
         }
     }
-    // TODO: is really everything ok?
 
     return true;
 }
@@ -164,14 +149,84 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
     // and may be removed
     command[count] = command[count];
 
+    /* Assignment implementation */
 
-/*
- * TODO
- *   Call execv, but first using https://stackoverflow.com/a/13784315/1446624 as a refernce,
- *   redirect standard out to a file specified by outputfile.
- *   The rest of the behaviour is same as do_exec()
- *
-*/
+    // Open file to redirect
+    int fd = open(outputfile, O_WRONLY|O_TRUNC|O_CREAT);
+    if (fd < 0)
+    {
+        perror("open");
+        return false;
+    }
+
+    const char* program_path = command[0];
+    char program[NAME_MAX];
+
+    char * found = strrchr(program_path, '/');
+    
+    if (found == NULL)
+    {
+        printf("Error: the command has to be given as an absolute path\n");
+        return false;
+    }
+    else
+    {
+        strncpy(program, found+1, NAME_MAX);
+    }
+
+    int ret, status;
+    pid_t pid;
+    char * argv[count];
+
+    argv[0] = program;
+
+    for(int j = 1; j < count+1; j++)
+    {
+        argv[j] = command[j];
+    }
+
+    pid = fork();
+
+    if(pid == -1)
+    {
+        perror("fork");
+        return false;
+    }
+    else if(pid == 0) // Child
+    {
+        // Redirect to standard out
+        if (dup2(fd, STDOUT_FILENO) < 0)
+        {
+            perror("dup2");
+            return false;
+        }
+
+        close(fd);
+        ret = execv(program_path, argv);
+
+        if (ret == -1)
+        {
+            perror("execv");
+            exit(EXIT_FAILURE);
+        }
+    }
+    else // Parent
+    {
+        close(fd);
+
+        if (wait (&status) == -1)
+        {
+            perror("wait");
+            return false;
+        }
+        else if (WIFEXITED(status))
+        {
+            // Debug
+            // printf("Exited with status %d - succeed\n", WEXITSTATUS(status));
+            va_end(args);
+            return WIFEXITED(status) && (WEXITSTATUS(status) == 0);
+        }
+    }
 
     va_end(args);
 
