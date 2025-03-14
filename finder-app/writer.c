@@ -9,7 +9,7 @@
  *         this file
  *  - Exits with value 1 error and print statements if any of the arguments 
  *    above were not specified
- *  - Creates a new file with name and path writefile with content writestr, 
+ *  - Creates a new file with name and path <writefile> with content <writestr>, 
  *    overwriting any existing file and creating the path if it doesn’t exist. 
  *    Exits with value 1 and error print statement if the file could not be created.
  *  Assumptions: no need to create directories which do not exist. It is created
