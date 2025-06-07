@@ -52,8 +52,7 @@ Assignemnt subtasks:
 
 #define PORT "9000"
 #define BACKLOG 10
-#define MAXBUFFERSIZE 10
-#define MAXTCPSEGMENTSIZE 65535
+#define MAXPACKETSIZE 65535
 
 void sigchld_handler(int s)
 {
@@ -65,7 +64,6 @@ void sigchld_handler(int s)
     errno = saved_errno;
 }
 
-
 // get sockaddr, IPv4 or IPv6:
 void *get_in_addr(struct sockaddr *sa)
 {
@@ -76,17 +74,87 @@ void *get_in_addr(struct sockaddr *sa)
     return &(((struct sockaddr_in6*)sa)->sin6_addr);
 }
 
+/** Receives data from the client and writes it to a file
+ * 
+ *  The buffer for the receiving data is allocated on the heap
+ */
+void recv_data_from_client(int client_fd, int tmp_fd)
+{
+    char * rcv_buf = NULL;
+    char * newline_ch = NULL;
+    int bytes_rcv = 0;
+    int total_bytes_pkt = 0;
+    
+    rcv_buf = malloc(MAXPACKETSIZE);
+
+    if (!rcv_buf)
+    {
+        fprintf(stderr, "malloc failed\n");
+        exit(-1);
+    }
+
+    memset(rcv_buf, 0, MAXPACKETSIZE);
+
+    do { // A packet is considered complete when a newline is found
+        bytes_rcv = recv(client_fd, &rcv_buf[total_bytes_pkt], MAXPACKETSIZE-total_bytes_pkt, 0);
+        
+        if (bytes_rcv == -1)
+        {
+            perror("recv");
+            exit(-1);
+        }
+        else if (bytes_rcv == 0) // client closed the connection
+        {
+            fprintf(stderr, "Client closed connection!\n");
+            break;
+        }
+
+        total_bytes_pkt += bytes_rcv;
+
+        if (total_bytes_pkt == MAXPACKETSIZE) break;
+
+        newline_ch = strchr(rcv_buf, '\n');
+
+    } while (!newline_ch);
+
+    if (total_bytes_pkt == MAXPACKETSIZE)
+    {
+        fprintf(stderr, "Oversized packet - Limit of MAXPACKETSIZE (65535) exceeded - Information may be lost\n");
+        
+        if (rcv_buf[MAXPACKETSIZE-1] != '\n')
+        {
+            // Truncate the string adding a newline character at the end
+            rcv_buf[MAXPACKETSIZE-1] = '\n';
+        }
+    }
+
+    printf("client (%d Bytes): %s", total_bytes_pkt, rcv_buf);
+
+    // Write packet to tmp file
+    write(tmp_fd, rcv_buf, total_bytes_pkt);
+
+    free(rcv_buf);
+}
+
+/** Reads data from file and sends it to the client
+ * 
+ *  The data will be read and sent by lines (i.e. until a newline character is found)
+ *  or until the capacity of the buffer is reached - in that case 
+ */
+void send_tmp_data_to_client()
+{
+
+}
+
 int main(void)
 {
-    int sockfd, new_fd;  // listen on sock_fd, new connection on new_fd
+    int sockfd, client_fd;  // listen on sock_fd, new connection on client_fd
     struct addrinfo hints, *servinfo, *p;
     struct sockaddr_storage their_addr; // connector's address information
     socklen_t sin_size;
     struct sigaction sa;
     int yes=1;
     char ipaddr_client[INET6_ADDRSTRLEN];
-    char rcv_buf[MAXBUFFERSIZE+1];
-    char packet_buf[MAXTCPSEGMENTSIZE];
     int rv;
 
     // Set up syslog
@@ -149,8 +217,8 @@ int main(void)
 
     while(1) {  // main accept() loop
         sin_size = sizeof their_addr;
-        new_fd = accept(sockfd, (struct sockaddr *)&their_addr, &sin_size);
-        if (new_fd == -1) {
+        client_fd = accept(sockfd, (struct sockaddr *)&their_addr, &sin_size);
+        if (client_fd == -1) {
             perror("accept");
             continue;
         }
@@ -161,19 +229,20 @@ int main(void)
         printf("server: got connection from %s\n", ipaddr_client);
         syslog(LOG_DEBUG, "Accepted connection from %s", ipaddr_client);
 
-        if (!fork()) { // this is the child process
+        if (!fork())
+        { // this is the child process
             close(sockfd); // child doesn't need the listener
-            int fd;
+            int tmp_fd;
 
-            if (send(new_fd, "Connection with the server established.\n", 41, 0) == -1) {
+            if (send(client_fd, "Connection with the server established.\n", 41, 0) == -1) {
                 perror("send");
             }
             
             // Open file
             const char *filename = "/var/tmp/aesdsocketdata";
-            fd = open(filename, O_WRONLY|O_CREAT|O_APPEND, S_IRWXU|S_IRWXG|S_IRWXO);
+            tmp_fd = open(filename, O_RDWR|O_CREAT|O_APPEND, S_IRWXU|S_IRWXG|S_IRWXO);
 
-            if (fd == -1)
+            if (tmp_fd == -1)
             {
                 perror("open");
                 // fprintf(stderr, "Error opening %s\n", filename);
@@ -181,40 +250,15 @@ int main(void)
                 return -1;
             }
             
-            char * newline_ch = NULL;
-            int bytes_rcv = 0;
-            int bytes_pkt = 0;
-            memset(packet_buf, 0, MAXTCPSEGMENTSIZE);
-                        
-            do { // A packet is considered complete when a newline is found
-                memset(rcv_buf, 0, MAXBUFFERSIZE+1);
-                if ((bytes_rcv = recv(new_fd, rcv_buf, MAXBUFFERSIZE, 0)) == -1) perror("recv");
+            recv_data_from_client(client_fd, tmp_fd);
 
-                // The data stream does not include null characters
-                // String handling functions like strcat require null-terminated strings
-                rcv_buf[bytes_rcv+1] = '\0';
-                printf("  packet: %s\n", rcv_buf);
-                printf("  packet: number of bytes received: %d\n", bytes_rcv);
+            send_tmp_data_to_client();
 
-                bytes_pkt += bytes_rcv;
-                strcat(packet_buf, rcv_buf);
-
-                newline_ch = strchr(rcv_buf, '\n');
-                if (newline_ch == NULL) printf("EoL not found\n");
-            } while (newline_ch == NULL);
-
-            printf("EoL found\n");
-
-            printf("server: total received: %s\n", packet_buf);
-            printf("server: total number of bytes received: %d\n", bytes_pkt);
-
-            write(fd, packet_buf, bytes_pkt);
-
-            close(new_fd);
-            close(fd);
+            close(client_fd);
+            close(tmp_fd);
             exit(0);
         }
-        close(new_fd);  // parent doesn't need this
+        close(client_fd);  // parent doesn't need this
     }
 
     return 0;
