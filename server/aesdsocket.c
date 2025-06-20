@@ -52,6 +52,9 @@ Assignemnt subtasks:
 
 #define PORT "9000"
 #define BACKLOG 10
+#define MAX_BUFFERS 1000
+
+/* Theoretical maximum size for TCP segment - window size of 16 bit */
 #define MAXPACKETSIZE 65535
 
 void sigchld_handler(int s)
@@ -77,6 +80,7 @@ void *get_in_addr(struct sockaddr *sa)
 /** Receives data from the client and writes it to a file
  * 
  *  The buffer for the receiving data is allocated on the heap
+ *  with the size of MAXPACKETSIZE
  */
 void recv_data_from_client(int client_fd, int tmp_fd)
 {
@@ -84,12 +88,13 @@ void recv_data_from_client(int client_fd, int tmp_fd)
     char * newline_ch = NULL;
     int bytes_rcv = 0;
     int total_bytes_pkt = 0;
+    int bytes_written = 0; 
     
     rcv_buf = malloc(MAXPACKETSIZE);
 
     if (!rcv_buf)
     {
-        fprintf(stderr, "malloc failed\n");
+        fprintf(stderr, "malloc for rcv_buf failed\n");
         exit(-1);
     }
 
@@ -131,19 +136,125 @@ void recv_data_from_client(int client_fd, int tmp_fd)
     printf("client (%d Bytes): %s", total_bytes_pkt, rcv_buf);
 
     // Write packet to tmp file
-    write(tmp_fd, rcv_buf, total_bytes_pkt);
+    bytes_written = write(tmp_fd, rcv_buf, total_bytes_pkt);
+    if (bytes_written == -1)
+    {
+        perror("write");
+        exit(-1);
+    }
+    else if (bytes_written != total_bytes_pkt)
+    {
+        fprintf(stderr, "write: not all bytes from buffer could be written to file - Information may be lost\n");
+    }
 
+    lseek(tmp_fd, 0, SEEK_SET); // Reset file position
     free(rcv_buf);
 }
 
 /** Reads data from file and sends it to the client
  * 
  *  The data will be read and sent by lines (i.e. until a newline character is found)
- *  or until the capacity of the buffer is reached - in that case 
+ *  or until the capacity of the buffer is reached
  */
-void send_tmp_data_to_client()
+void send_tmp_data_to_client(int client_fd, int tmp_fd)
 {
+    char * newline_ch = NULL;
+    char * send_buf = NULL;
+    char * cur_buf = NULL;
+    int bytes_read = 0;
+    int bytes_sent = 0;
+    int read_buf_len = 0;
+    int cur_buf_len = 0;
+    int buffers_used = 0;
+    int bytes_read_total = 0;
+    char* buffer_pool[MAX_BUFFERS] = { NULL }; // 1000 x 4096 = 4 MB (should be enough)
 
+    // Use page size for the size of read buffer
+    read_buf_len = getpagesize(); // Usually 4096
+    printf("page size: %d\n", read_buf_len);
+
+    for (int i = 0; i < MAX_BUFFERS && !newline_ch; i++)
+    {
+        buffer_pool[i] = malloc(read_buf_len);
+        if (!buffer_pool[i])
+        {
+            fprintf(stderr, "malloc for read buffer failed\n");
+            exit(-1);
+        }
+        memset(buffer_pool[i], 0, read_buf_len);
+
+        cur_buf = buffer_pool[i];
+        cur_buf_len = read_buf_len;
+
+        do {
+            bytes_read = read(tmp_fd, cur_buf, cur_buf_len);
+
+            printf("Bytes read: %d\n", bytes_read);
+            printf("cur_buf_len: %d\n", cur_buf_len);
+
+            if (bytes_read == -1)
+            {
+                perror("read");
+                exit(-1);
+            }
+    
+            newline_ch = strchr(cur_buf, '\n');
+            cur_buf_len -= bytes_read;
+            cur_buf += bytes_read;
+            bytes_read_total += bytes_read;
+
+            if (newline_ch)
+            {
+                printf("Line found!\n");
+                break;
+            }
+
+        } while (cur_buf_len != 0 && bytes_read != 0 && newline_ch == NULL);
+
+        if (newline_ch == NULL && cur_buf_len == 0) // no newline found and buffer is full
+        {
+            printf("No new line found! - allocating a new buffer!\n");
+        }
+        
+        buffers_used = i+1;
+    }
+
+    printf("Bytes read total (final): %d\n", bytes_read_total);
+    printf("read_buf_len (final): %d\n", read_buf_len);
+    printf("Buffers used: %d\n", buffers_used);
+
+    if (!newline_ch && buffers_used == MAX_BUFFERS)
+    {
+        printf("No new line found and no more buffers available! - string may be incomplete!\n");
+    }
+
+    send_buf = malloc(buffers_used * read_buf_len);
+    if (!send_buf)
+    {
+        fprintf(stderr, "malloc for send_buf failed\n");
+        exit(-1);
+    }
+    memset(send_buf, 0, buffers_used * read_buf_len);
+
+    // Copy content of file in send buffer
+    for (int i = 0; i < buffers_used; i++)
+    {
+        memcpy(send_buf + i*read_buf_len, buffer_pool[i], read_buf_len);
+    }
+
+    printf("Content of the file/buffer before send:\n%s", send_buf);
+
+    bytes_sent = send(client_fd, send_buf, bytes_read_total, 0);
+
+    if (bytes_sent == -1 ) { perror("send"); }
+
+    printf("Bytes sent: %d\n", bytes_sent);
+
+    free(send_buf);
+    for (int i = 0; i < buffers_used; i++)
+    {
+        free(buffer_pool[i]);
+    }
 }
 
 int main(void)
@@ -252,7 +363,7 @@ int main(void)
             
             recv_data_from_client(client_fd, tmp_fd);
 
-            send_tmp_data_to_client();
+            send_tmp_data_to_client(client_fd, tmp_fd);
 
             close(client_fd);
             close(tmp_fd);
