@@ -180,9 +180,8 @@ void send_tmp_data_to_client(int client_fd, int tmp_fd)
     int bytes_read_total = 0;
     char* buffer_pool[MAX_BUFFERS] = { NULL }; // 16 x 4096 = 65536 (should be enough)
 
-    // Use page size for the size of read buffer
-    read_buf_len = getpagesize(); // Usually 4096
-    printf("page size: %d\n", read_buf_len);
+    // Use page size for the size of read buffer, usually 4096
+    read_buf_len = getpagesize();
 
     for (int i = 0; i < MAX_BUFFERS && !newline_ch; i++)
     {
@@ -194,8 +193,8 @@ void send_tmp_data_to_client(int client_fd, int tmp_fd)
         do {
             bytes_read = read(tmp_fd, cur_buf, cur_buf_len);
 
-            printf("Bytes read: %d\n", bytes_read);
-            printf("cur_buf_len: %d\n", cur_buf_len);
+            // printf("Bytes read: %d\n", bytes_read);
+            // printf("cur_buf_len: %d\n", cur_buf_len);
 
             if (bytes_read == -1)
             {
@@ -208,11 +207,7 @@ void send_tmp_data_to_client(int client_fd, int tmp_fd)
             cur_buf += bytes_read;
             bytes_read_total += bytes_read;
 
-            if (newline_ch)
-            {
-                printf("Line found!\n");
-                break;
-            }
+            if (newline_ch) { break; } // Line found
 
         } while (cur_buf_len != 0 && bytes_read != 0 && newline_ch == NULL);
 
@@ -224,9 +219,8 @@ void send_tmp_data_to_client(int client_fd, int tmp_fd)
         buffers_used = i+1;
     }
 
-    printf("Bytes read total (final): %d\n", bytes_read_total);
-    printf("read_buf_len (final): %d\n", read_buf_len);
-    printf("Buffers used: %d\n", buffers_used);
+    // printf("Bytes read total (final): %d\n", bytes_read_total);
+    // printf("Buffers used: %d\n", buffers_used);
 
     if (!newline_ch && buffers_used == MAX_BUFFERS)
     {
@@ -241,13 +235,13 @@ void send_tmp_data_to_client(int client_fd, int tmp_fd)
         memcpy(send_buf + i*read_buf_len, buffer_pool[i], read_buf_len);
     }
 
-    printf("Content of the file/buffer before send:\n%s", send_buf);
+    // printf("Content of the file/buffer before send:\n%s", send_buf);
 
     bytes_sent = send(client_fd, send_buf, bytes_read_total, 0);
 
     if (bytes_sent == -1 ) { perror("send"); }
 
-    printf("Bytes sent: %d\n", bytes_sent);
+    // printf("Bytes sent: %d\n", bytes_sent);
 
     // Free buffers
     free(send_buf);
@@ -338,7 +332,7 @@ int main(void)
                   get_in_addr((struct sockaddr *)&their_addr),
                   ipaddr_client, sizeof ipaddr_client);
         printf("server: got connection from %s\n", ipaddr_client);
-        syslog(LOG_DEBUG, "Accepted connection from %s", ipaddr_client);
+        syslog(LOG_INFO, "Accepted connection from %s", ipaddr_client);
 
         if (!fork())
         { // this is the child process
@@ -356,9 +350,7 @@ int main(void)
             if (tmp_fd == -1)
             {
                 perror("open");
-                // fprintf(stderr, "Error opening %s\n", filename);
-                // syslog(LOG_ERR, "Error opening %s\n", filename);
-                return -1;
+                exit(-1);
             }
             
             recv_data_from_client(client_fd, tmp_fd);
@@ -367,6 +359,8 @@ int main(void)
 
             close(client_fd);
             close(tmp_fd);
+            syslog(LOG_INFO, "Closed connection from %s", ipaddr_client);
+
             exit(0);
         }
         close(client_fd);  // parent doesn't need this
