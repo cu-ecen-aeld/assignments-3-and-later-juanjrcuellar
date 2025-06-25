@@ -53,9 +53,7 @@ Assignemnt subtasks:
 #define PORT "9000"
 #define BACKLOG 10
 #define MAX_BUFFERS 16
-
-/* Theoretical maximum size for TCP segment - window size of 16 bit */
-#define MAXPACKETSIZE 65535
+#define MAXPACKETSIZE 65535 /* Theoretical maximum size for TCP segment - window size of 16 bit */
 
 void sigchld_handler(int s)
 {
@@ -251,13 +249,33 @@ void send_tmp_data_to_client(int client_fd, int tmp_fd)
     }
 }
 
+void sigexit_handler(int signal_number)
+{
+    if(signal_number == SIGINT)
+    {
+        printf("Caught SIGINT signal, exiting\n");
+        syslog(LOG_INFO, "Caught signal, exiting");
+
+        exit(0);
+
+
+    }
+    else if (signal_number == SIGTERM)
+    {
+        printf("Caught SIGTERM signal, exiting\n");
+        syslog(LOG_INFO, "Caught signal, exiting");
+
+        exit(0);
+    }
+}
+
 int main(void)
 {
     int sockfd, client_fd;  // listen on sock_fd, new connection on client_fd
     struct addrinfo hints, *servinfo, *p;
     struct sockaddr_storage their_addr; // connector's address information
     socklen_t sin_size;
-    struct sigaction sa;
+    struct sigaction action_children, action_exit;
     int yes=1;
     char ipaddr_client[INET6_ADDRSTRLEN];
     int rv;
@@ -310,12 +328,25 @@ int main(void)
         exit(-1);
     }
 
-    sa.sa_handler = sigchld_handler; // reap all dead processes
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART;
-    if (sigaction(SIGCHLD, &sa, NULL) == -1) {
+    // Setup signal handling
+    memset(&action_children, 0, sizeof(struct sigaction));
+    action_children.sa_handler = sigchld_handler; // reap all dead processes
+    sigemptyset(&action_children.sa_mask);
+    action_children.sa_flags = SA_RESTART;
+    if (sigaction(SIGCHLD, &action_children, NULL) == -1) {
         perror("sigaction");
         exit(-1);
+    }
+
+    memset(&action_exit, 0, sizeof(struct sigaction));
+    action_exit.sa_handler = sigexit_handler;
+    if (sigaction(SIGTERM, &action_exit, NULL) != 0)
+    {
+        fprintf(stderr, "Error %d (%s) registering for SIGTERM", errno, strerror(errno));
+    }
+    if (sigaction(SIGINT, &action_exit, NULL) != 0)
+    {
+        fprintf(stderr, "Error %d (%s) registering for SIGINT", errno, strerror(errno));
     }
 
     printf("server: waiting for connections...\n");
