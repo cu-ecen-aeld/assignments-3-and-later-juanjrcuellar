@@ -54,6 +54,19 @@ Assignemnt subtasks:
 #define BACKLOG 10
 #define MAX_BUFFERS 16
 #define MAXPACKETSIZE 65535 /* Theoretical maximum size for TCP segment - window size of 16 bit */
+#define TMPFILEPATH "/var/tmp/aesdsocketdata"
+
+/****************
+ Global variables
+ ***************/
+
+int tmpfile_fd;    
+int sock_fd;         // Listen on sock_fd
+int client_fd;       // New connection on client_fd
+
+/*********
+ Functions
+ ********/
 
 void sigchld_handler(int s)
 {
@@ -99,13 +112,20 @@ void* alloc_buffer(int len)
  *  The buffer for the receiving data is allocated on the heap
  *  with the size of MAXPACKETSIZE
  */
-void recv_data_from_client(int client_fd, int tmp_fd)
+void recv_data_from_client()
 {
     char * rcv_buf = NULL;
     char * newline_ch = NULL;
     int bytes_rcv = 0;
     int total_bytes_pkt = 0;
-    int bytes_written = 0; 
+    int bytes_written = 0;
+
+    // Check if needed fds were open
+    if (client_fd == -1 || tmpfile_fd == -1)
+    {
+        fprintf(stderr, "Error: client connection or temp file were not open!");
+        exit(-1);
+    }
     
     rcv_buf = (char*)alloc_buffer(MAXPACKETSIZE);
 
@@ -119,7 +139,7 @@ void recv_data_from_client(int client_fd, int tmp_fd)
         }
         else if (bytes_rcv == 0) // client closed the connection
         {
-            fprintf(stderr, "Client closed connection!\n");
+            fprintf(stderr, "Error: Client closed connection before a new line was found!\n");
             break;
         }
 
@@ -145,7 +165,7 @@ void recv_data_from_client(int client_fd, int tmp_fd)
     printf("client (%d Bytes): %s", total_bytes_pkt, rcv_buf);
 
     // Write packet to tmp file
-    bytes_written = write(tmp_fd, rcv_buf, total_bytes_pkt);
+    bytes_written = write(tmpfile_fd, rcv_buf, total_bytes_pkt);
     if (bytes_written == -1)
     {
         perror("write");
@@ -156,7 +176,7 @@ void recv_data_from_client(int client_fd, int tmp_fd)
         fprintf(stderr, "write: not all bytes from buffer could be written to file - Information may be lost\n");
     }
 
-    lseek(tmp_fd, 0, SEEK_SET); // Reset file position
+    lseek(tmpfile_fd, 0, SEEK_SET); // Reset file position
     free(rcv_buf);
 }
 
@@ -165,7 +185,7 @@ void recv_data_from_client(int client_fd, int tmp_fd)
  *  The data will be read and sent by lines (i.e. until a newline character is found)
  *  or until the capacity of the buffer is reached; in that case a new buffer is allocated
  */
-void send_tmp_data_to_client(int client_fd, int tmp_fd)
+void send_tmp_data_to_client()
 {
     char * newline_ch = NULL;
     char * send_buf = NULL;
@@ -178,6 +198,13 @@ void send_tmp_data_to_client(int client_fd, int tmp_fd)
     int bytes_read_total = 0;
     char* buffer_pool[MAX_BUFFERS] = { NULL }; // 16 x 4096 = 65536 (should be enough)
 
+    // Check if needed fds were open
+    if (client_fd == -1 || tmpfile_fd == -1)
+    {
+        fprintf(stderr, "Error: client connection or temp file were not open!");
+        exit(-1);
+    }
+
     // Use page size for the size of read buffer, usually 4096
     read_buf_len = getpagesize();
 
@@ -189,7 +216,7 @@ void send_tmp_data_to_client(int client_fd, int tmp_fd)
         cur_buf_len = read_buf_len;
 
         do {
-            bytes_read = read(tmp_fd, cur_buf, cur_buf_len);
+            bytes_read = read(tmpfile_fd, cur_buf, cur_buf_len);
 
             // printf("Bytes read: %d\n", bytes_read);
             // printf("cur_buf_len: %d\n", cur_buf_len);
@@ -251,27 +278,24 @@ void send_tmp_data_to_client(int client_fd, int tmp_fd)
 
 void sigexit_handler(int signal_number)
 {
-    if(signal_number == SIGINT)
+    if(signal_number == SIGINT || signal_number == SIGTERM)
     {
-        printf("Caught SIGINT signal, exiting\n");
+        // printf("Caught %s signal, closing fds and exiting\n", (signal_number == SIGINT ? "SIGINT" : "SIGTERM") );
         syslog(LOG_INFO, "Caught signal, exiting");
 
-        exit(0);
+        if (sock_fd != -1)    { close(sock_fd); }
+        if (client_fd != -1)  { close(client_fd); }
+        if (tmpfile_fd != -1) { close(tmpfile_fd); }
 
+        // Delete tmp file
+        if (unlink(TMPFILEPATH) != 0) { printf("There was a problem deleting the tmp file!\n"); }
 
-    }
-    else if (signal_number == SIGTERM)
-    {
-        printf("Caught SIGTERM signal, exiting\n");
-        syslog(LOG_INFO, "Caught signal, exiting");
-
-        exit(0);
+        _exit(0);
     }
 }
 
 int main(void)
 {
-    int sockfd, client_fd;  // listen on sock_fd, new connection on client_fd
     struct addrinfo hints, *servinfo, *p;
     struct sockaddr_storage their_addr; // connector's address information
     socklen_t sin_size;
@@ -279,6 +303,10 @@ int main(void)
     int yes=1;
     char ipaddr_client[INET6_ADDRSTRLEN];
     int rv;
+
+    tmpfile_fd = -1;
+    sock_fd = -1;
+    client_fd = -1;
 
     // Set up syslog
     openlog(NULL, 0, LOG_USER);
@@ -295,20 +323,20 @@ int main(void)
 
     // loop through all the results and bind to the first we can
     for(p = servinfo; p != NULL; p = p->ai_next) {
-        if ((sockfd = socket(p->ai_family, p->ai_socktype,
+        if ((sock_fd = socket(p->ai_family, p->ai_socktype,
                 p->ai_protocol)) == -1) {
             perror("server: socket");
             continue;
         }
 
-        if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes,
+        if (setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, &yes,
                 sizeof(int)) == -1) {
             perror("setsockopt");
             exit(-1);
         }
 
-        if (bind(sockfd, p->ai_addr, p->ai_addrlen) == -1) {
-            close(sockfd);
+        if (bind(sock_fd, p->ai_addr, p->ai_addrlen) == -1) {
+            close(sock_fd);
             perror("server: bind");
             continue;
         }
@@ -323,7 +351,7 @@ int main(void)
         exit(-1);
     }
 
-    if (listen(sockfd, BACKLOG) == -1) {
+    if (listen(sock_fd, BACKLOG) == -1) {
         perror("listen");
         exit(-1);
     }
@@ -353,7 +381,7 @@ int main(void)
 
     while(1) {  // main accept() loop
         sin_size = sizeof their_addr;
-        client_fd = accept(sockfd, (struct sockaddr *)&their_addr, &sin_size);
+        client_fd = accept(sock_fd, (struct sockaddr *)&their_addr, &sin_size);
         if (client_fd == -1) {
             perror("accept");
             continue;
@@ -367,34 +395,37 @@ int main(void)
 
         if (!fork())
         { // this is the child process
-            close(sockfd); // child doesn't need the listener
-            int tmp_fd;
+            close(sock_fd); // child doesn't need the listener
+            sock_fd = -1;
 
-            if (send(client_fd, "Connection with the server established.\n", 41, 0) == -1) {
-                perror("send");
-            }
+            // if (send(client_fd, "Connection with the server established.\n", 41, 0) == -1) {
+            //     perror("send");
+            // }
             
             // Open file
-            const char *filename = "/var/tmp/aesdsocketdata";
-            tmp_fd = open(filename, O_RDWR|O_CREAT|O_APPEND, S_IRWXU|S_IRWXG|S_IRWXO);
+            const char *filename = TMPFILEPATH;
+            tmpfile_fd = open(filename, O_RDWR|O_CREAT|O_APPEND, S_IRWXU|S_IRWXG|S_IRWXO);
 
-            if (tmp_fd == -1)
+            if (tmpfile_fd == -1)
             {
                 perror("open");
                 exit(-1);
             }
             
-            recv_data_from_client(client_fd, tmp_fd);
+            recv_data_from_client();
 
-            send_tmp_data_to_client(client_fd, tmp_fd);
+            send_tmp_data_to_client();
 
             close(client_fd);
-            close(tmp_fd);
+            client_fd = -1;
+            close(tmpfile_fd);
+            tmpfile_fd = -1;
             syslog(LOG_INFO, "Closed connection from %s", ipaddr_client);
 
             exit(0);
         }
         close(client_fd);  // parent doesn't need this
+        client_fd = -1;
     }
 
     return 0;
