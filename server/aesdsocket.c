@@ -49,6 +49,7 @@ Assignemnt subtasks:
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <stdbool.h>
 
 #define PORT "9000"
 #define BACKLOG 10
@@ -294,7 +295,7 @@ void sigexit_handler(int signal_number)
     }
 }
 
-int main(void)
+int main(int argc, char* argv[])
 {
     struct addrinfo hints, *servinfo, *p;
     struct sockaddr_storage their_addr; // connector's address information
@@ -303,6 +304,33 @@ int main(void)
     int yes=1;
     char ipaddr_client[INET6_ADDRSTRLEN];
     int rv;
+    bool daemon_mode = false;
+
+    if(argc > 2)
+    {
+        printf("Error: too many arguments\n");
+        printf("Usage: %s [-d]\n", argv[0]);
+        printf("\t-d: run in daemon mode\n");
+        return -1;
+    }
+    else if (argc == 2)
+    {
+        if (strcmp("-d", argv[1]) != 0)
+        {
+            printf("Error: invalid option\n");
+            printf("Usage: %s [-d]\n", argv[0]);
+            printf("\t-d: run in daemon mode\n");
+            return -1;
+        }
+
+        daemon_mode = true;
+        printf("Daemon mode\n");
+    }
+    else
+    {
+        daemon_mode = false;
+        printf("Normal mode\n");
+    }
 
     tmpfile_fd = -1;
     sock_fd = -1;
@@ -393,15 +421,42 @@ int main(void)
         printf("server: got connection from %s\n", ipaddr_client);
         syslog(LOG_INFO, "Accepted connection from %s", ipaddr_client);
 
-        if (!fork())
-        { // this is the child process
-            close(sock_fd); // child doesn't need the listener
-            sock_fd = -1;
+        if(daemon_mode)
+        {
+            if (!fork())
+            { // this is the child process
+                close(sock_fd); // child doesn't need the listener
+                sock_fd = -1;
 
-            // if (send(client_fd, "Connection with the server established.\n", 41, 0) == -1) {
-            //     perror("send");
-            // }
-            
+                // if (send(client_fd, "Connection with the server established.\n", 41, 0) == -1) {
+                //     perror("send");
+                // }
+                
+                // Open file
+                const char *filename = TMPFILEPATH;
+                tmpfile_fd = open(filename, O_RDWR|O_CREAT|O_APPEND, S_IRWXU|S_IRWXG|S_IRWXO);
+
+                if (tmpfile_fd == -1)
+                {
+                    perror("open");
+                    exit(-1);
+                }
+                
+                recv_data_from_client();
+
+                send_tmp_data_to_client();
+
+                close(client_fd);
+                client_fd = -1;
+                close(tmpfile_fd);
+                tmpfile_fd = -1;
+                syslog(LOG_INFO, "Closed connection from %s", ipaddr_client);
+
+                exit(0);
+            }
+        }
+        else
+        {
             // Open file
             const char *filename = TMPFILEPATH;
             tmpfile_fd = open(filename, O_RDWR|O_CREAT|O_APPEND, S_IRWXU|S_IRWXG|S_IRWXO);
@@ -416,14 +471,11 @@ int main(void)
 
             send_tmp_data_to_client();
 
-            close(client_fd);
-            client_fd = -1;
             close(tmpfile_fd);
             tmpfile_fd = -1;
             syslog(LOG_INFO, "Closed connection from %s", ipaddr_client);
-
-            exit(0);
         }
+
         close(client_fd);  // parent doesn't need this
         client_fd = -1;
     }
