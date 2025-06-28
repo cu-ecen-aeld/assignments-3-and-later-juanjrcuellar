@@ -163,7 +163,7 @@ void recv_data_from_client()
         }
     }
 
-    printf("client (%d Bytes): %s", total_bytes_pkt, rcv_buf);
+    printf("client (%d Bytes): %s\n", total_bytes_pkt, rcv_buf);
 
     // Write packet to tmp file
     bytes_written = write(tmpfile_fd, rcv_buf, total_bytes_pkt);
@@ -183,12 +183,12 @@ void recv_data_from_client()
 
 /** Reads data from file and sends it to the client
  * 
- *  The data will be read and sent by lines (i.e. until a newline character is found)
- *  or until the capacity of the buffer is reached; in that case a new buffer is allocated
+ *  The data will be read into a buffer with the size of the page size.
+ *  When the buffer is full, a new buffer from a buffer pool will be allocated.
+ *  When EOF is reached, a buffer for send will be allocated with the size of the buffers used to read.
  */
 void send_tmp_data_to_client()
 {
-    char * newline_ch = NULL;
     char * send_buf = NULL;
     char * cur_buf = NULL;
     int bytes_read = 0;
@@ -209,7 +209,7 @@ void send_tmp_data_to_client()
     // Use page size for the size of read buffer, usually 4096
     read_buf_len = getpagesize();
 
-    for (int i = 0; i < MAX_BUFFERS && !newline_ch; i++)
+    for (int i = 0; i < MAX_BUFFERS; i++)
     {
         buffer_pool[i] = (char*)alloc_buffer(read_buf_len);
 
@@ -228,27 +228,26 @@ void send_tmp_data_to_client()
                 exit(-1);
             }
     
-            newline_ch = strchr(cur_buf, '\n');
             cur_buf_len -= bytes_read;
             cur_buf += bytes_read;
             bytes_read_total += bytes_read;
 
-            if (newline_ch) { break; } // Line found
+        } while (cur_buf_len != 0 && bytes_read != 0);
 
-        } while (cur_buf_len != 0 && bytes_read != 0 && newline_ch == NULL);
-
-        if (newline_ch == NULL && cur_buf_len == 0) // no newline found and buffer is full
-        {
-            printf("No new line found! - allocating a new buffer!\n");
-        }
+        // if (cur_buf_len == 0) // Buffer is full
+        // {
+        //     printf("Allocating a new buffer!\n");
+        // }
         
         buffers_used = i+1;
+
+        if (bytes_read == 0) {break;}
     }
 
     // printf("Bytes read total (final): %d\n", bytes_read_total);
     // printf("Buffers used: %d\n", buffers_used);
 
-    if (!newline_ch && buffers_used == MAX_BUFFERS)
+    if (buffers_used == MAX_BUFFERS)
     {
         printf("No new line found and no more buffers available! - string may be incomplete!\n");
     }
