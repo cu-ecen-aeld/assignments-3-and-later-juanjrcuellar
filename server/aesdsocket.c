@@ -132,7 +132,6 @@ void recv_data_from_client()
 
     do { // A packet is considered complete when a newline is found
         bytes_rcv = recv(client_fd, &rcv_buf[total_bytes_pkt], MAXPACKETSIZE-total_bytes_pkt, 0);
-        
         if (bytes_rcv == -1)
         {
             perror("recv");
@@ -162,8 +161,6 @@ void recv_data_from_client()
             rcv_buf[MAXPACKETSIZE-1] = '\n';
         }
     }
-
-    printf("client (%d Bytes): %s\n", total_bytes_pkt, rcv_buf);
 
     // Write packet to tmp file
     bytes_written = write(tmpfile_fd, rcv_buf, total_bytes_pkt);
@@ -218,10 +215,6 @@ void send_tmp_data_to_client()
 
         do {
             bytes_read = read(tmpfile_fd, cur_buf, cur_buf_len);
-
-            // printf("Bytes read: %d\n", bytes_read);
-            // printf("cur_buf_len: %d\n", cur_buf_len);
-
             if (bytes_read == -1)
             {
                 perror("read");
@@ -233,19 +226,11 @@ void send_tmp_data_to_client()
             bytes_read_total += bytes_read;
 
         } while (cur_buf_len != 0 && bytes_read != 0);
-
-        // if (cur_buf_len == 0) // Buffer is full
-        // {
-        //     printf("Allocating a new buffer!\n");
-        // }
         
         buffers_used = i+1;
 
         if (bytes_read == 0) {break;}
     }
-
-    // printf("Bytes read total (final): %d\n", bytes_read_total);
-    // printf("Buffers used: %d\n", buffers_used);
 
     if (buffers_used == MAX_BUFFERS)
     {
@@ -260,13 +245,9 @@ void send_tmp_data_to_client()
         memcpy(send_buf + i*read_buf_len, buffer_pool[i], read_buf_len);
     }
 
-    // printf("Content of the file/buffer before send:\n%s", send_buf);
-
     bytes_sent = send(client_fd, send_buf, bytes_read_total, 0);
 
     if (bytes_sent == -1 ) { perror("send"); }
-
-    // printf("Bytes sent: %d\n", bytes_sent);
 
     // Free buffers
     free(send_buf);
@@ -280,15 +261,13 @@ void sigexit_handler(int signal_number)
 {
     if(signal_number == SIGINT || signal_number == SIGTERM)
     {
-        // printf("Caught %s signal, closing fds and exiting\n", (signal_number == SIGINT ? "SIGINT" : "SIGTERM") );
         syslog(LOG_INFO, "Caught signal, exiting");
 
         if (sock_fd != -1)    { close(sock_fd); }
         if (client_fd != -1)  { close(client_fd); }
         if (tmpfile_fd != -1) { close(tmpfile_fd); }
 
-        // Delete tmp file
-        if (unlink(TMPFILEPATH) != 0) { printf("There was a problem deleting the tmp file!\n"); }
+        unlink(TMPFILEPATH); // Delete tmp file
 
         _exit(0);
     }
@@ -298,10 +277,10 @@ int main(int argc, char* argv[])
 {
     struct addrinfo hints, *servinfo, *p;
     struct sockaddr_storage their_addr; // connector's address information
-    socklen_t sin_size;
     struct sigaction action_children, action_exit;
-    int yes=1;
+    socklen_t sin_size;
     char ipaddr_client[INET6_ADDRSTRLEN];
+    int yes = 1;
     int rv;
     bool daemon_mode = false;
     pid_t pid;
@@ -324,12 +303,10 @@ int main(int argc, char* argv[])
         }
 
         daemon_mode = true;
-        printf("Daemon mode\n");
     }
     else
     {
         daemon_mode = false;
-        printf("Normal mode\n");
     }
 
     tmpfile_fd = -1;
@@ -366,26 +343,29 @@ int main(int argc, char* argv[])
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_PASSIVE; // use my IP
 
-    if ((rv = getaddrinfo(NULL, PORT, &hints, &servinfo)) != 0) {
+    if ((rv = getaddrinfo(NULL, PORT, &hints, &servinfo)) != 0)
+    {
         fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
         return -1;
     }
 
     // loop through all the results and bind to the first we can
-    for(p = servinfo; p != NULL; p = p->ai_next) {
-        if ((sock_fd = socket(p->ai_family, p->ai_socktype,
-                p->ai_protocol)) == -1) {
+    for(p = servinfo; p != NULL; p = p->ai_next)
+    {
+        if ((sock_fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1)
+        {
             perror("server: socket");
             continue;
         }
 
-        if (setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, &yes,
-                sizeof(int)) == -1) {
+        if (setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1)
+        {
             perror("setsockopt");
             exit(-1);
         }
 
-        if (bind(sock_fd, p->ai_addr, p->ai_addrlen) == -1) {
+        if (bind(sock_fd, p->ai_addr, p->ai_addrlen) == -1)
+        {
             close(sock_fd);
             perror("server: bind");
             continue;
@@ -396,15 +376,12 @@ int main(int argc, char* argv[])
 
     freeaddrinfo(servinfo); // all done with this structure
 
-    if (p == NULL)  {
+    if (p == NULL)
+    {
         fprintf(stderr, "server: failed to bind\n");
         exit(-1);
     }
 
-    // TODO: now it works and the tests are successful - some things should be done:
-    // - Implement properly daemon behavior (like in the lectures: setsid, chdir, ...)
-    // - Refactor: above main the function declarations and below the definitions
-    // - Remove printfs and clean up
     if (daemon_mode)
     {
         pid = fork();
@@ -423,17 +400,20 @@ int main(int argc, char* argv[])
         if (chdir ("/") == -1) return -1;
     }
 
-    if (listen(sock_fd, BACKLOG) == -1) {
+    if (listen(sock_fd, BACKLOG) == -1)
+    {
         perror("listen");
         exit(-1);
     }
 
-    printf("server: waiting for connections...\n");
+    // printf("server: waiting for connections...\n");
 
-    while(1) {  // main accept() loop
+    while(1) // main accept() loop
+    {
         sin_size = sizeof their_addr;
         client_fd = accept(sock_fd, (struct sockaddr *)&their_addr, &sin_size);
-        if (client_fd == -1) {
+        if (client_fd == -1)
+        {
             perror("accept");
             continue;
         }
@@ -441,7 +421,6 @@ int main(int argc, char* argv[])
         inet_ntop(their_addr.ss_family,
                   get_in_addr((struct sockaddr *)&their_addr),
                   ipaddr_client, sizeof ipaddr_client);
-        printf("server: got connection from %s\n", ipaddr_client);
         syslog(LOG_INFO, "Accepted connection from %s", ipaddr_client);
 
         if(daemon_mode)
