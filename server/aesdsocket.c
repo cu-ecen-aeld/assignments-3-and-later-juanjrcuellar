@@ -304,8 +304,9 @@ int main(int argc, char* argv[])
     char ipaddr_client[INET6_ADDRSTRLEN];
     int rv;
     bool daemon_mode = false;
+    pid_t pid;
 
-    if(argc > 2)
+    if (argc > 2)
     {
         printf("Error: too many arguments\n");
         printf("Usage: %s [-d]\n", argv[0]);
@@ -338,6 +339,28 @@ int main(int argc, char* argv[])
     // Set up syslog
     openlog(NULL, 0, LOG_USER);
 
+    // Setup signal handling
+    memset(&action_children, 0, sizeof(struct sigaction));
+    action_children.sa_handler = sigchld_handler; // reap all dead processes
+    sigemptyset(&action_children.sa_mask);
+    action_children.sa_flags = SA_RESTART;
+    if (sigaction(SIGCHLD, &action_children, NULL) == -1) {
+        perror("sigaction");
+        exit(-1);
+    }
+
+    memset(&action_exit, 0, sizeof(struct sigaction));
+    action_exit.sa_handler = sigexit_handler;
+    if (sigaction(SIGTERM, &action_exit, NULL) != 0)
+    {
+        fprintf(stderr, "Error %d (%s) registering for SIGTERM", errno, strerror(errno));
+    }
+    if (sigaction(SIGINT, &action_exit, NULL) != 0)
+    {
+        fprintf(stderr, "Error %d (%s) registering for SIGINT", errno, strerror(errno));
+    }
+
+    // Setup connection
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
@@ -378,30 +401,31 @@ int main(int argc, char* argv[])
         exit(-1);
     }
 
+    // TODO: now it works and the tests are successful - some things should be done:
+    // - Implement properly daemon behavior (like in the lectures: setsid, chdir, ...)
+    // - Refactor: above main the function declarations and below the definitions
+    // - Remove printfs and clean up
+    if (daemon_mode)
+    {
+        pid = fork();
+        if (pid == -1)
+        {
+            perror("fork");
+            exit(-1);
+        }
+        else if (pid != 0) // Parent
+        {
+            close(sock_fd);
+            exit(0);
+        }
+
+        if (setsid() == -1) return -1;
+        if (chdir ("/") == -1) return -1;
+    }
+
     if (listen(sock_fd, BACKLOG) == -1) {
         perror("listen");
         exit(-1);
-    }
-
-    // Setup signal handling
-    memset(&action_children, 0, sizeof(struct sigaction));
-    action_children.sa_handler = sigchld_handler; // reap all dead processes
-    sigemptyset(&action_children.sa_mask);
-    action_children.sa_flags = SA_RESTART;
-    if (sigaction(SIGCHLD, &action_children, NULL) == -1) {
-        perror("sigaction");
-        exit(-1);
-    }
-
-    memset(&action_exit, 0, sizeof(struct sigaction));
-    action_exit.sa_handler = sigexit_handler;
-    if (sigaction(SIGTERM, &action_exit, NULL) != 0)
-    {
-        fprintf(stderr, "Error %d (%s) registering for SIGTERM", errno, strerror(errno));
-    }
-    if (sigaction(SIGINT, &action_exit, NULL) != 0)
-    {
-        fprintf(stderr, "Error %d (%s) registering for SIGINT", errno, strerror(errno));
     }
 
     printf("server: waiting for connections...\n");
@@ -422,16 +446,12 @@ int main(int argc, char* argv[])
 
         if(daemon_mode)
         {
-            if (!fork())
-            { // this is the child process
+            if (!fork()) // This is the child process
+            {
                 close(sock_fd); // child doesn't need the listener
                 sock_fd = -1;
-
-                // if (send(client_fd, "Connection with the server established.\n", 41, 0) == -1) {
-                //     perror("send");
-                // }
-                
-                // Open file
+              
+                // Open tmp file
                 const char *filename = TMPFILEPATH;
                 tmpfile_fd = open(filename, O_RDWR|O_CREAT|O_APPEND, S_IRWXU|S_IRWXG|S_IRWXO);
 
@@ -454,9 +474,9 @@ int main(int argc, char* argv[])
                 exit(0);
             }
         }
-        else
+        else // In no-daemon mode the requests are processed sequentially
         {
-            // Open file
+            // Open tmp file
             const char *filename = TMPFILEPATH;
             tmpfile_fd = open(filename, O_RDWR|O_CREAT|O_APPEND, S_IRWXU|S_IRWXG|S_IRWXO);
 
