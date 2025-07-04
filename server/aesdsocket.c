@@ -398,6 +398,14 @@ int main(int argc, char* argv[])
 
         if (setsid() == -1) return -1;
         if (chdir ("/") == -1) return -1;
+
+        /* redirect fd's 0,1,2 to /dev/null */
+        close(0);
+        close(1);
+        close(2);
+        open ("/dev/null", O_RDWR); /* stdin (0) -> /dev/null */
+        dup (0);                    /* stdout (1) -> 0 -> /dev/null */
+        dup (0);                    /* stderror (2) -> 0 -> /dev/null */
     }
 
     if (listen(sock_fd, BACKLOG) == -1)
