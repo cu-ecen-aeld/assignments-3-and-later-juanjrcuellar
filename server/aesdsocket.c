@@ -50,6 +50,8 @@ Assignemnt subtasks:
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <stdbool.h>
+#include <pthread.h>
+#include "queue.h"
 
 #define PORT "9000"
 #define BACKLOG 10
@@ -57,13 +59,22 @@ Assignemnt subtasks:
 #define MAXPACKETSIZE 65535 /* Theoretical maximum size for TCP segment - window size of 16 bit */
 #define TMPFILEPATH "/var/tmp/aesdsocketdata"
 
+
+typedef struct slist_data_s slist_data_t;
+struct slist_data_s {
+    pthread_t pthread_id;
+    int client_fd;
+    bool finished;
+    SLIST_ENTRY(slist_data_s) entries;
+};
+
+
 /****************
  Global variables
  ***************/
 
 int tmpfile_fd;    
-int sock_fd;         // Listen on sock_fd
-int client_fd;       // New connection on client_fd
+int sock_fd;
 
 /*********
  Functions
@@ -113,7 +124,7 @@ void* alloc_buffer(int len)
  *  The buffer for the receiving data is allocated on the heap
  *  with the size of MAXPACKETSIZE
  */
-void recv_data_from_client()
+void recv_data_from_client(int client_fd)
 {
     char * rcv_buf = NULL;
     char * newline_ch = NULL;
@@ -184,7 +195,7 @@ void recv_data_from_client()
  *  When the buffer is full, a new buffer from a buffer pool will be allocated.
  *  When EOF is reached, a buffer for send will be allocated with the size of the buffers used to read.
  */
-void send_tmp_data_to_client()
+void send_tmp_data_to_client(int client_fd)
 {
     char * send_buf = NULL;
     char * cur_buf = NULL;
@@ -257,6 +268,19 @@ void send_tmp_data_to_client()
     }
 }
 
+void * connection_thread (void *arg)
+{
+    slist_data_t *node = arg;
+    
+    recv_data_from_client(node->client_fd);
+
+    send_tmp_data_to_client(node->client_fd);
+
+    node->finished = true;
+
+    return arg;
+}
+
 void sigexit_handler(int signal_number)
 {
     if(signal_number == SIGINT || signal_number == SIGTERM)
@@ -264,7 +288,9 @@ void sigexit_handler(int signal_number)
         syslog(LOG_INFO, "Caught signal, exiting");
 
         if (sock_fd != -1)    { close(sock_fd); }
-        if (client_fd != -1)  { close(client_fd); }
+
+        // TODO: request an exit from each thread -> pthread_cancel()?
+
         if (tmpfile_fd != -1) { close(tmpfile_fd); }
 
         unlink(TMPFILEPATH); // Delete tmp file
@@ -311,7 +337,6 @@ int main(int argc, char* argv[])
 
     tmpfile_fd = -1;
     sock_fd = -1;
-    client_fd = -1;
 
     // Set up syslog
     openlog(NULL, 0, LOG_USER);
@@ -414,13 +439,26 @@ int main(int argc, char* argv[])
         exit(-1);
     }
 
-    // printf("server: waiting for connections...\n");
+    // Open tmp file
+    const char *filename = TMPFILEPATH;
+    tmpfile_fd = open(filename, O_RDWR|O_CREAT|O_APPEND, S_IRWXU|S_IRWXG|S_IRWXO);
+
+    if (tmpfile_fd == -1)
+    {
+        perror("open");
+        exit(-1);
+    }
+
+    // Initialize Linked List
+    slist_data_t *slist_node = NULL;
+    SLIST_HEAD(slisthead, slist_data_s) head;
+    SLIST_INIT(&head);
 
     while(1) // main accept() loop
     {
         sin_size = sizeof their_addr;
-        client_fd = accept(sock_fd, (struct sockaddr *)&their_addr, &sin_size);
-        if (client_fd == -1)
+        int new_client_fd = accept(sock_fd, (struct sockaddr *)&their_addr, &sin_size);
+        if (new_client_fd == -1)
         {
             perror("accept");
             continue;
@@ -431,59 +469,35 @@ int main(int argc, char* argv[])
                   ipaddr_client, sizeof ipaddr_client);
         syslog(LOG_INFO, "Accepted connection from %s", ipaddr_client);
 
-        if(daemon_mode)
+        slist_node = malloc(sizeof(slist_data_t));
+        if (slist_node == NULL)
+        { 
+            close(new_client_fd);
+            continue;
+        }
+        slist_node->finished = false; // set here to avoid race conditions
+
+        pthread_t new_thread;
+        pthread_create (&new_thread, NULL, connection_thread, (void *)slist_node);
+        
+        slist_node->pthread_id = new_thread;
+        slist_node->client_fd = new_client_fd;
+        
+        SLIST_INSERT_HEAD(&head, slist_node, entries);
+
+        slist_data_t *temp_node = NULL;
+        SLIST_FOREACH_SAFE(slist_node, &head, entries, temp_node)
         {
-            if (!fork()) // This is the child process
+            if (slist_node->finished)
             {
-                close(sock_fd); // child doesn't need the listener
-                sock_fd = -1;
-              
-                // Open tmp file
-                const char *filename = TMPFILEPATH;
-                tmpfile_fd = open(filename, O_RDWR|O_CREAT|O_APPEND, S_IRWXU|S_IRWXG|S_IRWXO);
-
-                if (tmpfile_fd == -1)
-                {
-                    perror("open");
-                    exit(-1);
-                }
-                
-                recv_data_from_client();
-
-                send_tmp_data_to_client();
-
-                close(client_fd);
-                client_fd = -1;
-                close(tmpfile_fd);
-                tmpfile_fd = -1;
+                pthread_join(slist_node->pthread_id, NULL);
+                close(slist_node->client_fd);
                 syslog(LOG_INFO, "Closed connection from %s", ipaddr_client);
 
-                exit(0);
+                SLIST_REMOVE(&head, slist_node, slist_data_s, entries);
+                free(slist_node);
             }
         }
-        else // In no-daemon mode the requests are processed sequentially
-        {
-            // Open tmp file
-            const char *filename = TMPFILEPATH;
-            tmpfile_fd = open(filename, O_RDWR|O_CREAT|O_APPEND, S_IRWXU|S_IRWXG|S_IRWXO);
-
-            if (tmpfile_fd == -1)
-            {
-                perror("open");
-                exit(-1);
-            }
-            
-            recv_data_from_client();
-
-            send_tmp_data_to_client();
-
-            close(tmpfile_fd);
-            tmpfile_fd = -1;
-            syslog(LOG_INFO, "Closed connection from %s", ipaddr_client);
-        }
-
-        close(client_fd);  // parent doesn't need this
-        client_fd = -1;
     }
 
     return 0;

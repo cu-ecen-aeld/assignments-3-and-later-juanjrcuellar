@@ -2,6 +2,7 @@ SRC := aesdsocket.c
 TARGET = aesdsocket
 CC = gcc
 CFLAGS = -g -Wall -Werror
+LIBS = -pthread
 
 ifeq ($(CROSS_COMPILE), aarch64-none-linux-gnu-)
 CC = aarch64-none-linux-gnu-gcc
@@ -11,7 +12,7 @@ all: $(TARGET)
 default: $(TARGET)
 
 $(TARGET): $(SRC)
-	$(CC) $(CFLAGS) $(SRC) -o $(TARGET)
+	$(CC) $(CFLAGS) $(LIBS) $(SRC) -o $(TARGET)
 	@echo "Compiled with $(CC)"
 
 clean:
