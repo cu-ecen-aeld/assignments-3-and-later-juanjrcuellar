@@ -1,37 +1,46 @@
-/************************************************************************************************************
-Assignment Task: Create a socket based program with name aesdsocket in the “server” directory 
+/******************************************************************************
+Assignment 6 part 1: Native Socket Server Threading Support
 
-Assignemnt subtasks:
- - a. Is compiled by the “all” and “default” target of a Makefile in the “server” directory and 
-        supports cross compilation, placing the executable file in the “server” directory and named
-        aesdsocket.
- - b. Opens a stream socket bound to port 9000, failing and returning -1 if any of the socket 
-        connection steps fail.
- - c. Listens for and accepts a connection
- - d. Logs message to the syslog “Accepted connection from xxx” where XXXX is the IP address of the 
-        connected client.
- - e. Receives data over the connection and appends to file /var/tmp/aesdsocketdata, creating this 
-        file if it doesn’t exist.
-    - Your implementation should use a newline to separate data packets received. In other words a 
-        packet is considered complete when a newline character is found in the input receive stream, 
-        and each newline should result in an append to the /var/tmp/aesdsocketdata file.
-    - You may assume the data stream does not include null characters (therefore can be processed using
-        string handling functions).
-    - You may assume the length of the packet will be shorter than the available heap size. In other 
-        words, as long as you handle malloc() associated failures with error messages you may discard
-         associated over-length packets.
-- f. Returns the full content of /var/tmp/aesdsocketdata to the client as soon as the received data 
-        packet completes.
-    - You may assume the total size of all packets sent (and therefore size of /var/tmp/aesdsocketdata)
-        will be less than the size of the root filesystem, however you may **not** assume this total 
-        size of all packets sent will be less than the size of the available RAM for the process heap.
-- g. Logs message to the syslog “Closed connection from XXX” where XXX is the IP address of the connected
-        client.
-- h. Restarts accepting connections from new clients forever in a loop until SIGINT or SIGTERM is received.
-- i. Gracefully exits when SIGINT or SIGTERM is received, completing any open connection operations, 
-        closing any open sockets, and **deleting the file /var/tmp/aesdsocketdata**.
-    - Logs message to the syslog “Caught signal, exiting” when SIGINT or SIGTERM is received.
-************************************************************************************************************/
+New implementation details according to assignment instructions:
+
+ * Theading and Linked Lists *
+
+    - The program accepts now multiple simultaneous connections, with each 
+    connection spawning a new thread.
+
+    [TODO]
+    - Writes to /var/tmp/aesdsocketdata should be synchronized between threads 
+    using a mutex, to ensure data written by synchronous connections is not 
+    intermixed.
+
+    [TODO]
+    - A thread exits when the connection is closed by the client or when an 
+    error occurs in the send or receive steps.
+
+    [TODO]
+    - The program continues to gracefully exit when SIGTERM/SIGINT is received,
+    after requesting an exit from each thread and waiting for threads to 
+    complete execution.
+
+    - A singly linked list is used to managed threads, specifically the API from 
+    the revised BSD's queue.h implementation from https://github.com/stockrt/queue.h
+
+    - To join completed threads pthread_join() is used.
+
+ * Timestamp *
+
+    [TODO]
+    - A timestamp in the form “timestamp:time” is appended to the /var/tmp/
+    aesdsocketdata file every 10 seconds. The time is specified by the RFC 2822
+    compliant strftime format, followed by newline. The string includes the 
+    year, month, day, hour (in 24 hour format) minute and second representing 
+    the system wall clock time.
+
+    [TODO]
+    - A locking mechanism is used to ensure the timestamp is written 
+    atomically with respect to socket data.
+
+******************************************************************************/
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -64,6 +73,7 @@ typedef struct slist_data_s slist_data_t;
 struct slist_data_s {
     pthread_t pthread_id;
     int client_fd;
+    char ipaddr_client[INET6_ADDRSTRLEN];
     bool finished;
     SLIST_ENTRY(slist_data_s) entries;
 };
@@ -299,70 +309,12 @@ void sigexit_handler(int signal_number)
     }
 }
 
-int main(int argc, char* argv[])
+int setup_connection()
 {
     struct addrinfo hints, *servinfo, *p;
-    struct sockaddr_storage their_addr; // connector's address information
-    struct sigaction action_children, action_exit;
-    socklen_t sin_size;
-    char ipaddr_client[INET6_ADDRSTRLEN];
     int yes = 1;
     int rv;
-    bool daemon_mode = false;
-    pid_t pid;
 
-    if (argc > 2)
-    {
-        printf("Error: too many arguments\n");
-        printf("Usage: %s [-d]\n", argv[0]);
-        printf("\t-d: run in daemon mode\n");
-        return -1;
-    }
-    else if (argc == 2)
-    {
-        if (strcmp("-d", argv[1]) != 0)
-        {
-            printf("Error: invalid option\n");
-            printf("Usage: %s [-d]\n", argv[0]);
-            printf("\t-d: run in daemon mode\n");
-            return -1;
-        }
-
-        daemon_mode = true;
-    }
-    else
-    {
-        daemon_mode = false;
-    }
-
-    tmpfile_fd = -1;
-    sock_fd = -1;
-
-    // Set up syslog
-    openlog(NULL, 0, LOG_USER);
-
-    // Setup signal handling
-    memset(&action_children, 0, sizeof(struct sigaction));
-    action_children.sa_handler = sigchld_handler; // reap all dead processes
-    sigemptyset(&action_children.sa_mask);
-    action_children.sa_flags = SA_RESTART;
-    if (sigaction(SIGCHLD, &action_children, NULL) == -1) {
-        perror("sigaction");
-        exit(-1);
-    }
-
-    memset(&action_exit, 0, sizeof(struct sigaction));
-    action_exit.sa_handler = sigexit_handler;
-    if (sigaction(SIGTERM, &action_exit, NULL) != 0)
-    {
-        fprintf(stderr, "Error %d (%s) registering for SIGTERM", errno, strerror(errno));
-    }
-    if (sigaction(SIGINT, &action_exit, NULL) != 0)
-    {
-        fprintf(stderr, "Error %d (%s) registering for SIGINT", errno, strerror(errno));
-    }
-
-    // Setup connection
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
@@ -406,6 +358,77 @@ int main(int argc, char* argv[])
         fprintf(stderr, "server: failed to bind\n");
         exit(-1);
     }
+
+    return sock_fd;
+}
+
+void setup_signal_handling()
+{
+    struct sigaction action_children, action_exit;
+
+    memset(&action_children, 0, sizeof(struct sigaction));
+    action_children.sa_handler = sigchld_handler; // reap all dead processes
+    sigemptyset(&action_children.sa_mask);
+    action_children.sa_flags = SA_RESTART;
+    if (sigaction(SIGCHLD, &action_children, NULL) == -1) {
+        perror("sigaction");
+        exit(-1);
+    }
+
+    memset(&action_exit, 0, sizeof(struct sigaction));
+    action_exit.sa_handler = sigexit_handler;
+    if (sigaction(SIGTERM, &action_exit, NULL) != 0)
+    {
+        fprintf(stderr, "Error %d (%s) registering for SIGTERM", errno, strerror(errno));
+    }
+    if (sigaction(SIGINT, &action_exit, NULL) != 0)
+    {
+        fprintf(stderr, "Error %d (%s) registering for SIGINT", errno, strerror(errno));
+    }
+
+}
+
+int main(int argc, char* argv[])
+{
+    struct sockaddr_storage their_addr; // connector's address information
+    socklen_t sin_size;
+    char ipaddr_client[INET6_ADDRSTRLEN];
+    bool daemon_mode = false;
+    pid_t pid;
+
+    if (argc > 2)
+    {
+        printf("Error: too many arguments\n");
+        printf("Usage: %s [-d]\n", argv[0]);
+        printf("\t-d: run in daemon mode\n");
+        return -1;
+    }
+    else if (argc == 2)
+    {
+        if (strcmp("-d", argv[1]) != 0)
+        {
+            printf("Error: invalid option\n");
+            printf("Usage: %s [-d]\n", argv[0]);
+            printf("\t-d: run in daemon mode\n");
+            return -1;
+        }
+
+        daemon_mode = true;
+    }
+    else
+    {
+        daemon_mode = false;
+    }
+
+    tmpfile_fd = -1;
+    sock_fd = -1;
+
+    // Setup
+    openlog(NULL, 0, LOG_USER);
+
+    setup_signal_handling();
+
+    sock_fd = setup_connection();
 
     if (daemon_mode)
     {
@@ -475,6 +498,7 @@ int main(int argc, char* argv[])
             close(new_client_fd);
             continue;
         }
+        memset(slist_node, 0, sizeof(slist_data_t));
         slist_node->finished = false; // set here to avoid race conditions
 
         pthread_t new_thread;
@@ -482,6 +506,7 @@ int main(int argc, char* argv[])
         
         slist_node->pthread_id = new_thread;
         slist_node->client_fd = new_client_fd;
+        memcpy(slist_node->ipaddr_client, ipaddr_client, sizeof(ipaddr_client));
         
         SLIST_INSERT_HEAD(&head, slist_node, entries);
 
@@ -492,7 +517,7 @@ int main(int argc, char* argv[])
             {
                 pthread_join(slist_node->pthread_id, NULL);
                 close(slist_node->client_fd);
-                syslog(LOG_INFO, "Closed connection from %s", ipaddr_client);
+                syslog(LOG_INFO, "Closed connection from %s", slist_node->ipaddr_client);
 
                 SLIST_REMOVE(&head, slist_node, slist_data_s, entries);
                 free(slist_node);
