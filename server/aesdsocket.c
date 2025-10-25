@@ -8,7 +8,6 @@ New implementation details according to assignment instructions:
     - The program accepts now multiple simultaneous connections, with each 
     connection spawning a new thread.
 
-    [TODO]
     - Writes to /var/tmp/aesdsocketdata should be synchronized between threads 
     using a mutex, to ensure data written by synchronous connections is not 
     intermixed.
@@ -141,6 +140,7 @@ void recv_data_from_client(int client_fd)
     int bytes_rcv = 0;
     int total_bytes_pkt = 0;
     int bytes_written = 0;
+    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
     // Check if needed fds were open
     if (client_fd == -1 || tmpfile_fd == -1)
@@ -183,8 +183,12 @@ void recv_data_from_client(int client_fd)
         }
     }
 
-    // Write packet to tmp file
+    // Write packet to tmp file - Critical region
+    pthread_mutex_lock(&mutex);
+    lseek(tmpfile_fd, 0, SEEK_END); // Set position at the end, so that the new content will be appended
     bytes_written = write(tmpfile_fd, rcv_buf, total_bytes_pkt);
+    pthread_mutex_unlock(&mutex);
+
     if (bytes_written == -1)
     {
         perror("write");
@@ -195,7 +199,6 @@ void recv_data_from_client(int client_fd)
         fprintf(stderr, "write: not all bytes from buffer could be written to file - Information may be lost\n");
     }
 
-    lseek(tmpfile_fd, 0, SEEK_SET); // Reset file position
     free(rcv_buf);
 }
 
@@ -216,6 +219,7 @@ void send_tmp_data_to_client(int client_fd)
     int buffers_used = 0;
     int bytes_read_total = 0;
     char* buffer_pool[MAX_BUFFERS] = { NULL }; // 16 x 4096 = 65536 (should be enough)
+    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
     // Check if needed fds were open
     if (client_fd == -1 || tmpfile_fd == -1)
@@ -226,6 +230,9 @@ void send_tmp_data_to_client(int client_fd)
 
     // Use page size for the size of read buffer, usually 4096
     read_buf_len = getpagesize();
+
+    pthread_mutex_lock(&mutex); // read from tmpfile - critical region
+    lseek(tmpfile_fd, 0, SEEK_SET); // Reset file position before read
 
     for (int i = 0; i < MAX_BUFFERS; i++)
     {
@@ -252,6 +259,7 @@ void send_tmp_data_to_client(int client_fd)
 
         if (bytes_read == 0) {break;}
     }
+    pthread_mutex_unlock(&mutex);
 
     if (buffers_used == MAX_BUFFERS)
     {
