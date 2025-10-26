@@ -67,8 +67,10 @@ New implementation details according to assignment instructions:
 #define MAXPACKETSIZE 65535 /* Theoretical maximum size for TCP segment - window size of 16 bit */
 #define TMPFILEPATH "/var/tmp/aesdsocketdata"
 
+/************
+ Declarations
+************/
 
-typedef struct slist_data_s slist_data_t;
 struct slist_data_s {
     pthread_t pthread_id;
     int client_fd;
@@ -76,14 +78,20 @@ struct slist_data_s {
     bool finished;
     SLIST_ENTRY(slist_data_s) entries;
 };
+typedef struct slist_data_s slist_data_t;
 
+struct tmpfile_s {
+    int fd;
+    pthread_mutex_t mutex;
+};
+typedef struct tmpfile_s tmpfile_t;
 
 /****************
  Global variables
  ***************/
 
-int tmpfile_fd;    
-int sock_fd;
+tmpfile_t g_tmpfile = {-1, PTHREAD_MUTEX_INITIALIZER};
+int sock_fd = -1;
 
 /*********
  Functions
@@ -140,10 +148,9 @@ void recv_data_from_client(int client_fd)
     int bytes_rcv = 0;
     int total_bytes_pkt = 0;
     int bytes_written = 0;
-    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
     // Check if needed fds were open
-    if (client_fd == -1 || tmpfile_fd == -1)
+    if (client_fd == -1 || g_tmpfile.fd == -1)
     {
         fprintf(stderr, "Error: client connection or temp file were not open!");
         exit(-1);
@@ -184,10 +191,10 @@ void recv_data_from_client(int client_fd)
     }
 
     // Write packet to tmp file - Critical region
-    pthread_mutex_lock(&mutex);
-    lseek(tmpfile_fd, 0, SEEK_END); // Set position at the end, so that the new content will be appended
-    bytes_written = write(tmpfile_fd, rcv_buf, total_bytes_pkt);
-    pthread_mutex_unlock(&mutex);
+    pthread_mutex_lock(&g_tmpfile.mutex);
+    lseek(g_tmpfile.fd, 0, SEEK_END); // Set position at the end, so that the new content will be appended
+    bytes_written = write(g_tmpfile.fd, rcv_buf, total_bytes_pkt);
+    pthread_mutex_unlock(&g_tmpfile.mutex);
 
     if (bytes_written == -1)
     {
@@ -219,10 +226,9 @@ void send_tmp_data_to_client(int client_fd)
     int buffers_used = 0;
     int bytes_read_total = 0;
     char* buffer_pool[MAX_BUFFERS] = { NULL }; // 16 x 4096 = 65536 (should be enough)
-    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
     // Check if needed fds were open
-    if (client_fd == -1 || tmpfile_fd == -1)
+    if (client_fd == -1 || g_tmpfile.fd == -1)
     {
         fprintf(stderr, "Error: client connection or temp file were not open!");
         exit(-1);
@@ -231,8 +237,8 @@ void send_tmp_data_to_client(int client_fd)
     // Use page size for the size of read buffer, usually 4096
     read_buf_len = getpagesize();
 
-    pthread_mutex_lock(&mutex); // read from tmpfile - critical region
-    lseek(tmpfile_fd, 0, SEEK_SET); // Reset file position before read
+    pthread_mutex_lock(&g_tmpfile.mutex); // read from tmpfile - critical region
+    lseek(g_tmpfile.fd, 0, SEEK_SET); // Reset file position before read
 
     for (int i = 0; i < MAX_BUFFERS; i++)
     {
@@ -242,7 +248,7 @@ void send_tmp_data_to_client(int client_fd)
         cur_buf_len = read_buf_len;
 
         do {
-            bytes_read = read(tmpfile_fd, cur_buf, cur_buf_len);
+            bytes_read = read(g_tmpfile.fd, cur_buf, cur_buf_len);
             if (bytes_read == -1)
             {
                 perror("read");
@@ -259,7 +265,7 @@ void send_tmp_data_to_client(int client_fd)
 
         if (bytes_read == 0) {break;}
     }
-    pthread_mutex_unlock(&mutex);
+    pthread_mutex_unlock(&g_tmpfile.mutex);
 
     if (buffers_used == MAX_BUFFERS)
     {
@@ -309,7 +315,7 @@ void sigexit_handler(int signal_number)
 
         // TODO: request an exit from each thread -> pthread_cancel()?
 
-        if (tmpfile_fd != -1) { close(tmpfile_fd); }
+        if (g_tmpfile.fd != -1) { close(g_tmpfile.fd); }
 
         unlink(TMPFILEPATH); // Delete tmp file
 
@@ -428,9 +434,6 @@ int main(int argc, char* argv[])
         daemon_mode = false;
     }
 
-    tmpfile_fd = -1;
-    sock_fd = -1;
-
     // Setup
     openlog(NULL, 0, LOG_USER);
 
@@ -472,9 +475,9 @@ int main(int argc, char* argv[])
 
     // Open tmp file
     const char *filename = TMPFILEPATH;
-    tmpfile_fd = open(filename, O_RDWR|O_CREAT|O_APPEND, S_IRWXU|S_IRWXG|S_IRWXO);
+    g_tmpfile.fd = open(filename, O_RDWR|O_CREAT|O_APPEND, S_IRWXU|S_IRWXG|S_IRWXO);
 
-    if (tmpfile_fd == -1)
+    if (g_tmpfile.fd == -1)
     {
         perror("open");
         exit(-1);
