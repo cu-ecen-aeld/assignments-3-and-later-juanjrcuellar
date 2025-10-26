@@ -12,7 +12,6 @@ New implementation details according to assignment instructions:
     using a mutex, to ensure data written by synchronous connections is not 
     intermixed.
 
-    [TODO]
     - A thread exits when the connection is closed by the client or when an 
     error occurs in the send or receive steps.
 
@@ -128,7 +127,7 @@ void* alloc_buffer(int len)
     if (!local_ptr)
     {
         fprintf(stderr, "malloc for allocating buffer failed\n");
-        exit(-1);
+        pthread_exit(NULL);
     }
 
     memset(local_ptr, 0, len);
@@ -153,7 +152,7 @@ void recv_data_from_client(int client_fd)
     if (client_fd == -1 || g_tmpfile.fd == -1)
     {
         fprintf(stderr, "Error: client connection or temp file were not open!");
-        exit(-1);
+        pthread_exit(NULL);
     }
     
     rcv_buf = (char*)alloc_buffer(MAXPACKETSIZE);
@@ -163,12 +162,14 @@ void recv_data_from_client(int client_fd)
         if (bytes_rcv == -1)
         {
             perror("recv");
-            exit(-1);
+            free(rcv_buf);
+            pthread_exit(NULL);
         }
-        else if (bytes_rcv == 0) // client closed the connection
+        else if (bytes_rcv == 0) // client closed the connection - exit thread
         {
             fprintf(stderr, "Error: Client closed connection before a new line was found!\n");
-            break;
+            free(rcv_buf);
+            pthread_exit(NULL);
         }
 
         total_bytes_pkt += bytes_rcv;
@@ -199,7 +200,8 @@ void recv_data_from_client(int client_fd)
     if (bytes_written == -1)
     {
         perror("write");
-        exit(-1);
+        free(rcv_buf);
+        pthread_exit(NULL);;
     }
     else if (bytes_written != total_bytes_pkt)
     {
@@ -231,7 +233,7 @@ void send_tmp_data_to_client(int client_fd)
     if (client_fd == -1 || g_tmpfile.fd == -1)
     {
         fprintf(stderr, "Error: client connection or temp file were not open!");
-        exit(-1);
+        pthread_exit(NULL);
     }
 
     // Use page size for the size of read buffer, usually 4096
@@ -252,7 +254,11 @@ void send_tmp_data_to_client(int client_fd)
             if (bytes_read == -1)
             {
                 perror("read");
-                exit(-1);
+                for (int j = 0; j <= i; j++)
+                {
+                    free(buffer_pool[j]);
+                }
+                pthread_exit(NULL);
             }
     
             cur_buf_len -= bytes_read;
