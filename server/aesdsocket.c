@@ -15,7 +15,6 @@ New implementation details according to assignment instructions:
     - A thread exits when the connection is closed by the client or when an 
     error occurs in the send or receive steps.
 
-    [TODO]
     - The program continues to gracefully exit when SIGTERM/SIGINT is received,
     after requesting an exit from each thread and waiting for threads to 
     complete execution.
@@ -91,6 +90,9 @@ typedef struct tmpfile_s tmpfile_t;
 
 tmpfile_t g_tmpfile = {-1, PTHREAD_MUTEX_INITIALIZER};
 int sock_fd = -1;
+
+// Head of the Linked List is global so that is also accesible to the signal handler
+SLIST_HEAD(slisthead, slist_data_s) head;
 
 /*********
  Functions
@@ -315,11 +317,21 @@ void sigexit_handler(int signal_number)
 {
     if(signal_number == SIGINT || signal_number == SIGTERM)
     {
+        slist_data_t *slist_node = NULL;
+
         syslog(LOG_INFO, "Caught signal, exiting");
 
         if (sock_fd != -1)    { close(sock_fd); }
 
-        // TODO: request an exit from each thread -> pthread_cancel()?
+        // Request an exit from each thread
+        while (!SLIST_EMPTY(&head))
+        {
+            slist_node = SLIST_FIRST(&head);
+            pthread_cancel(slist_node->pthread_id);
+            close(slist_node->client_fd);
+            SLIST_REMOVE_HEAD(&head, entries);
+            free(slist_node);
+        }
 
         if (g_tmpfile.fd != -1) { close(g_tmpfile.fd); }
 
@@ -491,7 +503,6 @@ int main(int argc, char* argv[])
 
     // Initialize Linked List
     slist_data_t *slist_node = NULL;
-    SLIST_HEAD(slisthead, slist_data_s) head;
     SLIST_INIT(&head);
 
     while(1) // main accept() loop
