@@ -80,7 +80,7 @@ typedef struct slist_data_s slist_data_t;
 
 struct tmpfile_s {
     int fd;
-    pthread_mutex_t mutex;
+    pthread_mutex_t lock;
 };
 typedef struct tmpfile_s tmpfile_t;
 
@@ -194,10 +194,10 @@ void recv_data_from_client(int client_fd)
     }
 
     // Write packet to tmp file - Critical region
-    pthread_mutex_lock(&g_tmpfile.mutex);
+    pthread_mutex_lock(&g_tmpfile.lock);
     lseek(g_tmpfile.fd, 0, SEEK_END); // Set position at the end, so that the new content will be appended
     bytes_written = write(g_tmpfile.fd, rcv_buf, total_bytes_pkt);
-    pthread_mutex_unlock(&g_tmpfile.mutex);
+    pthread_mutex_unlock(&g_tmpfile.lock);
 
     if (bytes_written == -1)
     {
@@ -241,7 +241,7 @@ void send_tmp_data_to_client(int client_fd)
     // Use page size for the size of read buffer, usually 4096
     read_buf_len = getpagesize();
 
-    pthread_mutex_lock(&g_tmpfile.mutex); // read from tmpfile - critical region
+    pthread_mutex_lock(&g_tmpfile.lock); // read from tmpfile - critical region
     lseek(g_tmpfile.fd, 0, SEEK_SET); // Reset file position before read
 
     for (int i = 0; i < MAX_BUFFERS; i++)
@@ -273,7 +273,7 @@ void send_tmp_data_to_client(int client_fd)
 
         if (bytes_read == 0) {break;}
     }
-    pthread_mutex_unlock(&g_tmpfile.mutex);
+    pthread_mutex_unlock(&g_tmpfile.lock);
 
     if (buffers_used == MAX_BUFFERS)
     {
