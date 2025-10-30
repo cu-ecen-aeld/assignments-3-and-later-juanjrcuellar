@@ -443,7 +443,7 @@ static void timer_thread(union sigval sigval)
     }
 }
 
-void setup_timer_timestamping()
+timer_t setup_timer_timestamping()
 {
     struct sigevent sev;
     memset(&sev, 0, sizeof(struct sigevent));
@@ -468,6 +468,8 @@ void setup_timer_timestamping()
         perror("timer_settime");
         exit(-1);
     }
+
+    return timer_id; // needed to delete the timer
 }
 
 int main(int argc, char* argv[])
@@ -552,7 +554,7 @@ int main(int argc, char* argv[])
     }
 
     // Create timer for time stamping
-    setup_timer_timestamping();
+    timer_t timer_id = setup_timer_timestamping();
 
     // Initialize Linked List
     slist_data_t *slist_node = NULL;
@@ -626,7 +628,7 @@ int main(int argc, char* argv[])
         free(slist_node);
     }
 
-    // timer_delete(timer_id);
+    timer_delete(timer_id);
 
     // Close and delete tmp file
     close(g_tmpfile.fd);
