@@ -90,7 +90,6 @@ typedef struct tmpfile_s tmpfile_t;
  ***************/
 
 tmpfile_t g_tmpfile = {-1, PTHREAD_MUTEX_INITIALIZER};
-int sock_fd = -1;
 
 volatile int signal_caught = 0;
 
@@ -326,6 +325,7 @@ int setup_connection()
     struct addrinfo hints, *servinfo, *p;
     int yes = 1;
     int rv;
+    int sock_fd;
 
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
@@ -474,11 +474,9 @@ timer_t setup_timer_timestamping()
 
 int main(int argc, char* argv[])
 {
-    struct sockaddr_storage their_addr; // connector's address information
-    socklen_t sin_size;
-    char ipaddr_client[INET6_ADDRSTRLEN];
     bool daemon_mode = false;
     pid_t pid;
+    int sock_fd;
 
     if (argc > 2)
     {
@@ -563,7 +561,10 @@ int main(int argc, char* argv[])
 
     while(!signal_caught) // main accept() loop
     {
-        sin_size = sizeof their_addr;
+        struct sockaddr_storage their_addr; // connector's address information
+        socklen_t sin_size = sizeof their_addr;;
+        char ipaddr_client[INET6_ADDRSTRLEN];
+
         int new_client_fd = accept(sock_fd, (struct sockaddr *)&their_addr, &sin_size);
         if (new_client_fd == -1)
         {
@@ -583,14 +584,15 @@ int main(int argc, char* argv[])
             continue;
         }
         memset(slist_node, 0, sizeof(slist_data_t));
-        slist_node->finished = false; // set here to avoid race conditions
 
         pthread_t new_thread;
+        slist_node->finished = false;
+        slist_node->client_fd = new_client_fd;
+        memcpy(slist_node->ipaddr_client, ipaddr_client, sizeof(ipaddr_client));
+
         pthread_create (&new_thread, NULL, connection_thread, (void *)slist_node);
         
         slist_node->pthread_id = new_thread;
-        slist_node->client_fd = new_client_fd;
-        memcpy(slist_node->ipaddr_client, ipaddr_client, sizeof(ipaddr_client));
         
         SLIST_INSERT_HEAD(&head, slist_node, entries);
 
