@@ -58,6 +58,7 @@ New implementation details according to assignment instructions:
 #include <stdbool.h>
 #include <pthread.h>
 #include "queue.h"
+#include <time.h>
 
 #define PORT "9000"
 #define BACKLOG 10
@@ -69,7 +70,8 @@ New implementation details according to assignment instructions:
  Declarations
 ************/
 
-struct slist_data_s {
+struct slist_data_s
+{
     pthread_t pthread_id;
     int client_fd;
     char ipaddr_client[INET6_ADDRSTRLEN];
@@ -78,7 +80,8 @@ struct slist_data_s {
 };
 typedef struct slist_data_s slist_data_t;
 
-struct tmpfile_s {
+struct tmpfile_s
+{
     int fd;
     pthread_mutex_t lock;
 };
@@ -420,6 +423,52 @@ void setup_signal_handling()
 
 }
 
+static void timer_thread(union sigval sigval)
+{
+    int ret;
+    struct tm current_time;
+    char tmstamp_string[100];
+    char tmstamp_out[200] = "timestamp:";
+    struct timespec ts_value;
+
+    // Get current time
+    ret = clock_gettime(CLOCK_REALTIME, &ts_value);
+    if( ret != 0 )
+    {
+        fprintf(stderr, "Error %d (%s) getting clock CLOCK_REALTIME\n",
+                errno, strerror(errno));
+    }
+
+    // Convert time_t to tm
+    if (gmtime_r(&ts_value.tv_sec, &current_time) == NULL )
+    {
+        fprintf(stderr, "Error calling gmtime_r with time %ld\n", ts_value.tv_sec);
+    }
+
+    // RFC 822 compliant date format
+    if ( strftime(tmstamp_string, sizeof(tmstamp_string), "%a, %d %b %y %T", &current_time) == 0 )
+    {
+        fprintf(stderr, "Error converting string with strftime\n");
+    }
+
+    strcat(tmstamp_out, tmstamp_string);
+    strcat(tmstamp_out, "\n");
+
+    // printf("%s", tmstamp_out);
+    // printf("Length of string: %ld\n", strlen(timestamp_prov));
+
+    // Write timestamp to tmp file - Critical region
+    pthread_mutex_lock(&g_tmpfile.lock);
+    lseek(g_tmpfile.fd, 0, SEEK_END); // Set position at the end, so that the new content will be appended
+    ret = write(g_tmpfile.fd, tmstamp_out, strlen(tmstamp_out) + 1);
+    pthread_mutex_unlock(&g_tmpfile.lock);
+
+    if (ret == -1)
+    {
+        perror("write");
+    }
+}
+
 int main(int argc, char* argv[])
 {
     struct sockaddr_storage their_addr; // connector's address information
@@ -501,10 +550,41 @@ int main(int argc, char* argv[])
         exit(-1);
     }
 
+    // Create timer for time stamping
+    // TODO: move to a proper function?
+    struct sigevent sev;
+    memset(&sev, 0, sizeof(struct sigevent));
+    sev.sigev_notify = SIGEV_THREAD;
+    sev.sigev_notify_function = timer_thread;
+    timer_t timer_id;
+
+    if (timer_create(CLOCK_MONOTONIC, &sev, &timer_id) != 0)
+    {
+        perror("timer_create");
+        exit(-1);
+    }
+
+    struct itimerspec its;
+    memset(&its, 0, sizeof(struct itimerspec));
+    its.it_interval.tv_sec = 10;
+    its.it_value.tv_sec = 10;
+
+
+    if(timer_settime(timer_id, 0, &its, NULL) != 0)
+    {
+        perror("timer_settime");
+        exit(-1);
+    }
+
+    // TODO: we need to delete the timer somewhere else - a refactoring for signal handling is needed
+    // timer_delete(timer_id);
+
     // Initialize Linked List
     slist_data_t *slist_node = NULL;
     SLIST_INIT(&head);
 
+    // TODO: change concept for signal handler -> approach of setting a flag when interrupting and then exiting the main loop
+    // problem: accept may be blocking waiting for a connection that never happens or after a long time
     while(1) // main accept() loop
     {
         sin_size = sizeof their_addr;
