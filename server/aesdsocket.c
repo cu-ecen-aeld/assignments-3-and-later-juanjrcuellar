@@ -92,8 +92,7 @@ typedef struct tmpfile_s tmpfile_t;
 tmpfile_t g_tmpfile = {-1, PTHREAD_MUTEX_INITIALIZER};
 int sock_fd = -1;
 
-// Head of the Linked List is global so that is also accesible to the signal handler
-SLIST_HEAD(slisthead, slist_data_s) head;
+volatile int signal_caught = 0;
 
 /*********
  Functions
@@ -318,27 +317,7 @@ void sigexit_handler(int signal_number)
 {
     if(signal_number == SIGINT || signal_number == SIGTERM)
     {
-        slist_data_t *slist_node = NULL;
-
-        syslog(LOG_INFO, "Caught signal, exiting");
-
-        if (sock_fd != -1)    { close(sock_fd); }
-
-        // Request an exit from each thread
-        while (!SLIST_EMPTY(&head))
-        {
-            slist_node = SLIST_FIRST(&head);
-            pthread_cancel(slist_node->pthread_id);
-            close(slist_node->client_fd);
-            SLIST_REMOVE_HEAD(&head, entries);
-            free(slist_node);
-        }
-
-        if (g_tmpfile.fd != -1) { close(g_tmpfile.fd); }
-
-        unlink(TMPFILEPATH); // Delete tmp file
-
-        _exit(0);
+        signal_caught = 1;
     }
 }
 
@@ -451,9 +430,6 @@ static void timer_thread(union sigval sigval)
 
     strcat(tmstamp_out, tmstamp_string);
     strcat(tmstamp_out, "\n");
-
-    // printf("%s", tmstamp_out);
-    // printf("Length of string: %ld\n", strlen(timestamp_prov));
 
     // Write timestamp to tmp file - Critical region
     pthread_mutex_lock(&g_tmpfile.lock);
@@ -578,16 +554,12 @@ int main(int argc, char* argv[])
     // Create timer for time stamping
     setup_timer_timestamping();
 
-    // TODO: we need to delete the timer somewhere else - a refactoring for signal handling is needed
-    // timer_delete(timer_id);
-
     // Initialize Linked List
     slist_data_t *slist_node = NULL;
+    SLIST_HEAD(slisthead, slist_data_s) head;
     SLIST_INIT(&head);
 
-    // TODO: change concept for signal handler -> approach of setting a flag when interrupting and then exiting the main loop
-    // problem: accept may be blocking waiting for a connection that never happens or after a long time
-    while(1) // main accept() loop
+    while(!signal_caught) // main accept() loop
     {
         sin_size = sizeof their_addr;
         int new_client_fd = accept(sock_fd, (struct sockaddr *)&their_addr, &sin_size);
@@ -634,6 +606,31 @@ int main(int argc, char* argv[])
             }
         }
     }
+
+    // Clean-up after signal was caught
+    // It is garanteed to fall here because according to the man page of
+    // signal() if a blocked call to accept (among others interfaces) is
+    // interrupted by a signal handler, the call fails with EINTR.
+
+    syslog(LOG_INFO, "Caught signal, exiting");
+
+    close(sock_fd);
+
+    // Request an exit from each thread
+    while (!SLIST_EMPTY(&head))
+    {
+        slist_node = SLIST_FIRST(&head);
+        pthread_cancel(slist_node->pthread_id);
+        close(slist_node->client_fd);
+        SLIST_REMOVE_HEAD(&head, entries);
+        free(slist_node);
+    }
+
+    // timer_delete(timer_id);
+
+    // Close and delete tmp file
+    close(g_tmpfile.fd);
+    unlink(TMPFILEPATH);
 
     return 0;
 }
