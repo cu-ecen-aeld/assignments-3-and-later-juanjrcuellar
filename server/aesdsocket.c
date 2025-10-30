@@ -26,14 +26,12 @@ New implementation details according to assignment instructions:
 
  * Timestamp *
 
-    [TODO]
     - A timestamp in the form “timestamp:time” is appended to the /var/tmp/
     aesdsocketdata file every 10 seconds. The time is specified by the RFC 2822
     compliant strftime format, followed by newline. The string includes the 
     year, month, day, hour (in 24 hour format) minute and second representing 
     the system wall clock time.
 
-    [TODO]
     - A locking mechanism is used to ensure the timestamp is written 
     atomically with respect to socket data.
 
@@ -469,6 +467,33 @@ static void timer_thread(union sigval sigval)
     }
 }
 
+void setup_timer_timestamping()
+{
+    struct sigevent sev;
+    memset(&sev, 0, sizeof(struct sigevent));
+    sev.sigev_notify = SIGEV_THREAD;
+    sev.sigev_notify_function = timer_thread;
+    timer_t timer_id;
+
+    if (timer_create(CLOCK_MONOTONIC, &sev, &timer_id) != 0)
+    {
+        perror("timer_create");
+        exit(-1);
+    }
+
+    struct itimerspec its;
+    memset(&its, 0, sizeof(struct itimerspec));
+    its.it_interval.tv_sec = 10;
+    its.it_value.tv_sec = 10;
+
+
+    if(timer_settime(timer_id, 0, &its, NULL) != 0)
+    {
+        perror("timer_settime");
+        exit(-1);
+    }
+}
+
 int main(int argc, char* argv[])
 {
     struct sockaddr_storage their_addr; // connector's address information
@@ -551,30 +576,7 @@ int main(int argc, char* argv[])
     }
 
     // Create timer for time stamping
-    // TODO: move to a proper function?
-    struct sigevent sev;
-    memset(&sev, 0, sizeof(struct sigevent));
-    sev.sigev_notify = SIGEV_THREAD;
-    sev.sigev_notify_function = timer_thread;
-    timer_t timer_id;
-
-    if (timer_create(CLOCK_MONOTONIC, &sev, &timer_id) != 0)
-    {
-        perror("timer_create");
-        exit(-1);
-    }
-
-    struct itimerspec its;
-    memset(&its, 0, sizeof(struct itimerspec));
-    its.it_interval.tv_sec = 10;
-    its.it_value.tv_sec = 10;
-
-
-    if(timer_settime(timer_id, 0, &its, NULL) != 0)
-    {
-        perror("timer_settime");
-        exit(-1);
-    }
+    setup_timer_timestamping();
 
     // TODO: we need to delete the timer somewhere else - a refactoring for signal handling is needed
     // timer_delete(timer_id);
